@@ -18,8 +18,6 @@ testRailProjectId = 21
 # jiraBasicAuth = sys.argv[3]
 # smartSheetPassword = sys.argv[4]
 
-
-
 # ...
 
 # these are the different JIRA team labels
@@ -87,7 +85,7 @@ def get_testrail_suites():
 
 
 def get_testrail_list_of_references(list_of_suites):
-    # The below call to testrail goes through each suite from above and gets a list of references:------------------------
+    # The below call to testrail goes through each suite from above and gets a list of references:--------------------
     for suiteIdFromList in list_of_suites:
         url = 'https://te2qa.testrail.net/index.php?/api/v2/get_cases/' + str(testRailProjectId) + '&suite_id=' + str(
             suiteIdFromList)
@@ -210,48 +208,39 @@ def build_status_dict(jira_ticket_dict):
     priority_dict = dict({'Draft': [], 'In Progress': [], 'Ready for QA': [], 'QA Complete': [],
                           'Done': [], 'Code Review': [], 'Blocked': [], 'Defects Found': [],
                           'Ready for DEV': [], 'QA in Progress': []})
+    report_ticket_list = set()
     for key, ticket in jira_ticket_dict.items():
         status = ticket['status']
-        if status != "Draft" and status != "Blocked":
-            if status == 'Draft':
-                priority_dict['Draft'].append(key)
-            elif status == 'In Progress':
-                priority_dict['In Progress'].append(key)
-            elif status == 'Ready for QA':
-                priority_dict['Ready for QA'].append(key)
-            elif status == 'QA Complete':
-                priority_dict['QA Complete'].append(key)
-            elif status == 'Done':
-                priority_dict['Done'].append(key)
-            elif status == 'Code Review':
-                priority_dict['Code Review'].append(key)
-            elif status == 'Blocked':
-                priority_dict['Blocked'].append(key)
-            elif status == 'Defects Found':
-                priority_dict['Defects Found'].append(key)
-            elif status == 'Ready for DEV':
-                priority_dict['Ready for DEV'].append(key)
-            elif status == 'QA in Progress':
-                priority_dict['QA in Progress'].append(key)
+        is_testable = ticket['isTestable']
+        # Makes a list of tickets that don't have the 'not-testable' tag and are not in draft or blocked
+        if status != "Draft" and status != "Blocked" and is_testable:
+            report_ticket_list.add(key)
+        if status == 'Draft':
+            priority_dict['Draft'].append(key)
+        elif status == 'In Progress':
+            priority_dict['In Progress'].append(key)
+        elif status == 'Ready for QA':
+            priority_dict['Ready for QA'].append(key)
+        elif status == 'QA Complete':
+            priority_dict['QA Complete'].append(key)
+        elif status == 'Done':
+            priority_dict['Done'].append(key)
+        elif status == 'Code Review':
+            priority_dict['Code Review'].append(key)
+        elif status == 'Blocked':
+            priority_dict['Blocked'].append(key)
+        elif status == 'Defects Found':
+            priority_dict['Defects Found'].append(key)
+        elif status == 'Ready for DEV':
+            priority_dict['Ready for DEV'].append(key)
+        elif status == 'QA in Progress':
+            priority_dict['QA in Progress'].append(key)
 
-    return priority_dict
+    return priority_dict, report_ticket_list
 
 
-# This loop goes through all the statuses and creates a list / quantity for each
-
-
-for statusType in sorted(listOfStatus):
-    print("A list of JIRA tickets was created for %s status type" % statusType)
-    for dicKey, value in jira_ticket_dict.items():
-        value = value['status']
-        if value != "Draft" and value != "Blocked":
-            if dicKey not in notTestable:
-                if dicKey not in listOfReportTickets:
-                    listOfReportTickets.append(dicKey)
-                    # Makes a list of tickets that don't have the 'not-testable' tag and are not in draft or blocked
-
-listOfReportTickets = sorted(listOfReportTickets,
-                             key=lambda x: int(re.search(r'\d+$', x).group()))  # sorts only by number
+# sorts only by number
+listOfReportTickets = sorted(listOfReportTickets,key=lambda x: int(re.search(r'\d+$', x).group()))
 listOfReportTickets = listOfReportTickets[::-1]  # reverses the list
 
 # this is made as a decision was made that refs should only be for the fueled 'story' tickets

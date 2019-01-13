@@ -1,5 +1,6 @@
 import requests
 import pprint
+import json
 import datetime
 import re
 from time import sleep
@@ -17,6 +18,7 @@ testRailProjectId = 21
 # testRailEmail = sys.argv[2]
 # jiraBasicAuth = sys.argv[3]
 # smartSheetPassword = sys.argv[4]
+
 
 # ...
 
@@ -49,7 +51,7 @@ COLUMN_MAPPINGS = dict({
     'List of QA in Progress': 2765854812202884, 'List of Ready for DEV': 7269454439573380,
     'List of Ready for QA': 1639954905360260, 'List of ALT tickets with no label': 3522496919037828
 })
-
+TESTRAIL_SUIT_FILTERS = ['Functional Verification - Release', 'Mobile']
 # global-ish variables initialized here:
 notTestable = []
 listOfReferences = []
@@ -64,6 +66,7 @@ URL_TESTRAIL_CASES = URL_TESTRAIL + 'get_cases/21/'
 HEADER_TESTRAIL = {'Cache-Control': 'no-cache', 'Content-Type': 'application/json'}
 
 URL_JIRA = 'https://te2web.atlassian.net/rest/api/2/search?jql=project=ALT'
+URL_PARAMS_JIRA = '&fields=customfield_12825,priority,issuetype,status,labels,key,summary&maxResults=100&startAt='
 HEADER_JIRA = {'Accept': 'application/json', 'Authorization': 'Basic ' + jiraBasicAuth}
 
 AUTH_TESTRAIL = (testRailEmail, testRailPassword)
@@ -78,9 +81,9 @@ def get_testrail_suites():
     else:
         print("The call to TestRail to get a list of suites for fueled's Mobile Sprints was successful.")
         for suite in r.json():
-            if 'Mobile' in suite['name']:
+            if 'Mobile' in suite['name'] or 'Functional Verification - Release' in suite['name']:
                 suite_id = suite['id']
-                list_of_suites.append(str(suite_id))
+                list_of_suites.append(suite_id)
     return list_of_suites
 
 
@@ -90,7 +93,7 @@ def get_testrail_list_of_references(list_of_suites):
         url = 'https://te2qa.testrail.net/index.php?/api/v2/get_cases/' + str(testRailProjectId) + '&suite_id=' + str(
             suiteIdFromList)
         headers = {'Cache-Control': 'no-cache', 'Content-Type': 'application/json'}
-        r = requests.get(url, headers=headers, auth=(testRailEmail, testRailPassword))
+        r = requests.get(url, headers=headers, auth=AUTH_TESTRAIL)
         if r.status_code != 200:
             print('Did not get a list of references for this suite from testrail')
         else:
@@ -113,7 +116,8 @@ def get_testrail_list_of_references(list_of_suites):
                             if refr not in listOfReferences:
                                 listOfReferences.append(refr)
                                 # listOfReferences now contains all refs in testrail for Mobile Sprints
-    return listOfReferences
+
+    return list(set(listOfReferences))
 
 
 def get_total_jira_issues():
@@ -128,11 +132,10 @@ def get_total_jira_issues():
     return total_issues
 
 
-def build_jira_ticket_dict(total_jira_issues):
+def build_jira_ticket_dict(total_jira_issues, list_of_references):
     jira_ticket_dict = dict()
     for i in range(0, total_jira_issues, 100):
-        url = URL_JIRA + '&fields=customfield_12825,priority,issuetype,status,labels,key,summary&maxResults=100&startAt=' \
-              + str(i)
+        url = URL_JIRA + URL_PARAMS_JIRA + str(i)
         r = requests.get(url, headers=HEADER_JIRA)
         if r.status_code != 200:
             print('Error: was unable to run through the first %i number of JIRA issues' % (i + 100))
@@ -145,34 +148,46 @@ def build_jira_ticket_dict(total_jira_issues):
                     listOfStatus.add(status)
 
                     jira_ticket_dict[key] = {
-                        'Label': label,
-                        'priority': ticket['fields']['priority']['name'],
-                        'severity': ticket['fields']['customfield_12825']['value'],
-                        'status': ticket['fields']['status']['name'],
-                        'type': ticket['fields']['issuetype']['name'],
-                        'isTestable': 'Not-Testable' in label,
-                        'isOpenBug': ticket['fields']['issuetype']['name'] == 'Bug' and status != 'Done',
-                        'isLabeled': label != []
-                    }
+                            'Label': label,
+                            'priority': ticket['fields']['priority']['name'],
+                            'severity': ticket['fields']['customfield_12825']['value'],
+                            'status': ticket['fields']['status']['name'],
+                            'type': ticket['fields']['issuetype']['name'],
+                            'isTestable': 'Not-Testable' in label,
+                            'isOpenBug': ticket['fields']['issuetype']['name'] == 'Bug' and status != 'Done',
+                            'isLabeled': label != [],
+                            'hasTestCase': key in list_of_references
+                        }
             print('The call to run through the first %i number of JIRA issues was successful.' % (i + 100))
     return jira_ticket_dict
 
 
 # Build a severity dictionary(none, low, medium, high, critical) of open bugs
 def build_severity_dict(jira_ticket_dict):
-    severity_dict = dict({'none': [], 'low': [], 'medium': [], 'high': [], 'critical': [], })
+    severity_dict = {
+        'none':     {'tickets': []},
+        'low':      {'tickets': []},
+        'medium':   {'tickets': []},
+        'high':     {'tickets': []},
+        'critical': {'tickets': []}
+    }
+
     for key, ticket in jira_ticket_dict.items():
         if ticket['isOpenBug']:
             if ticket['severity'] == 'Low':
-                severity_dict['low'].append(key)
+                severity_dict['low']['tickets'].append(key)
+
             elif ticket['severity'] == 'Medium':
-                severity_dict['medium'].append(key)
+                severity_dict['medium']['tickets'].append(key)
+
             elif ticket['severity'] == 'High':
-                severity_dict['high'].append(key)
+                severity_dict['high']['tickets'].append(key)
+
             elif ticket['severity'] == 'Critical':
-                severity_dict['critical'].append(key)
+                severity_dict['critical']['tickets'].append(key)
+
             else:
-                severity_dict['none'].append(key)
+                severity_dict['none']['tickets'].append(key)
     return severity_dict
 
 
@@ -181,117 +196,147 @@ def get_open_bug_list(jira_ticket_dict):
     for key, val in jira_ticket_dict.items():
         if val['isOpenBug']:
             open_bug_list.append(key)
-    pass
+    return open_bug_list
 
 
 # Build a priority dictionary(P1, P2, P3, P4, P5) of open bugs
 def build_priority_dict(jira_ticket_dict):
-    priority_dict = dict({'P1': [], 'P2': [], 'P3': [], 'P4': [], 'P5': [], })
+    priority_dict = dict({
+        'P1': {'tickets': []},
+        'P2': {'tickets': []},
+        'P3': {'tickets': []},
+        'P4': {'tickets': []},
+        'P5': {'tickets': []}})
+
     for key, ticket in jira_ticket_dict.items():
         if ticket['isOpenBug']:
+            if ticket['priority'] == 'P1 - Blocker':
+                priority_dict['P1']['tickets'].append(key)
 
-            if ticket['priority'] == 'P1':
-                priority_dict['P1'].append(key)
-            elif ticket['priority'] == 'P2':
-                priority_dict['P2'].append(key)
-            elif ticket['priority'] == 'P3':
-                priority_dict['P3'].append(key)
-            elif ticket['priority'] == 'P4':
-                priority_dict['P4'].append(key)
-            elif ticket['priority'] == 'P5':
-                priority_dict['P5'].append(key)
+            elif ticket['priority'] == 'P2 - Critical':
+                priority_dict['P2']['tickets'].append(key)
+
+            elif ticket['priority'] == 'P3 - Major':
+                priority_dict['P3']['tickets'].append(key)
+
+            elif ticket['priority'] == 'P4 - Minor':
+                priority_dict['P4']['tickets'].append(key)
+
+            elif ticket['priority'] == 'P5 - Trivial':
+                priority_dict['P5']['tickets'].append(key)
     return priority_dict
 
 
 # Build a status dictionary of jira tickets
 def build_status_dict(jira_ticket_dict):
-    priority_dict = dict({'Draft': [], 'In Progress': [], 'Ready for QA': [], 'QA Complete': [],
-                          'Done': [], 'Code Review': [], 'Blocked': [], 'Defects Found': [],
-                          'Ready for DEV': [], 'QA in Progress': []})
+    priority_dict = dict({
+        'Draft':            {'tickets': []},
+        'In Progress':      {'tickets': []},
+        'Ready for QA':     {'tickets': []},
+        'QA Complete':      {'tickets': []},
+        'Done':             {'tickets': []},
+        'Code Review':      {'tickets': []},
+        'Blocked':          {'tickets': []},
+        'Defects Found':    {'tickets': []},
+        'Ready for DEV':    {'tickets': []},
+        'QA in Progress':   {'tickets': []}})
+
     report_ticket_list = set()
     for key, ticket in jira_ticket_dict.items():
         status = ticket['status']
         is_testable = ticket['isTestable']
+
         # Makes a list of tickets that don't have the 'not-testable' tag and are not in draft or blocked
         if status != "Draft" and status != "Blocked" and is_testable:
             report_ticket_list.add(key)
+
         if status == 'Draft':
-            priority_dict['Draft'].append(key)
+            priority_dict['Draft']['tickets'].append(key)
+
         elif status == 'In Progress':
-            priority_dict['In Progress'].append(key)
+            priority_dict['In Progress']['tickets'].append(key)
+
         elif status == 'Ready for QA':
-            priority_dict['Ready for QA'].append(key)
+            priority_dict['Ready for QA']['tickets'].append(key)
+
         elif status == 'QA Complete':
-            priority_dict['QA Complete'].append(key)
+            priority_dict['QA Complete']['tickets'].append(key)
+
         elif status == 'Done':
-            priority_dict['Done'].append(key)
+            priority_dict['Done']['tickets'].append(key)
+
         elif status == 'Code Review':
-            priority_dict['Code Review'].append(key)
+            priority_dict['Code Review']['tickets'].append(key)
+
         elif status == 'Blocked':
-            priority_dict['Blocked'].append(key)
+            priority_dict['Blocked']['tickets'].append(key)
+
         elif status == 'Defects Found':
-            priority_dict['Defects Found'].append(key)
+            priority_dict['Defects Found']['tickets'].append(key)
+
         elif status == 'Ready for DEV':
-            priority_dict['Ready for DEV'].append(key)
+            priority_dict['Ready for DEV']['tickets'].append(key)
+
         elif status == 'QA in Progress':
-            priority_dict['QA in Progress'].append(key)
+            priority_dict['QA in Progress']['tickets'].append(key)
 
     return priority_dict, report_ticket_list
 
 
-# sorts only by number
-listOfReportTickets = sorted(listOfReportTickets,key=lambda x: int(re.search(r'\d+$', x).group()))
-listOfReportTickets = listOfReportTickets[::-1]  # reverses the list
+# Build a priority dictionary(P1, P2, P3, P4, P5) of open bugs
+def build_type_dict(jira_ticket_dict):
+    priority_dict = dict({
+        'Bug':      {'tickets': []},
+        'Story':    {'tickets': []},
+        'Sub-task': {'tickets': []},
+        'Task':     {'tickets': []},
+        'Epic':     {'tickets': []}})
 
-# this is made as a decision was made that refs should only be for the fueled 'story' tickets
-listOfStories = []
-totalBugCount = 0
-totalStoryCount = 0
-totalSubTaskCount = 0
-totalTaskCount = 0
-totalEpicCount = 0
-for ticketNumber, ticketType in jira_ticket_dict.items():
-    if ticketType['type'] == 'Bug':
-        totalBugCount += 1
-    if ticketType['type'] == 'Story':
-        totalStoryCount += 1
-    if ticketType['type'] == 'Sub-task':
-        totalSubTaskCount += 1
-    if ticketType['type'] == 'Task':
-        totalTaskCount += 1
-    if ticketType['type'] == 'Epic':
-        totalEpicCount += 1
-    if ticketNumber in listOfReportTickets:
-        if ticketType['type'] == 'Story':
-            listOfStories.append(ticketNumber)  # makes a list of stories that need test cases for testrail
+    for key, ticket in jira_ticket_dict.items():
+        ticket_type = ticket['type']
+        if ticket_type == 'Bug':
+            priority_dict['Bug']['tickets'].append(key)
 
-    # for reportTicket in listOfReportTickets:
-    #     if ticketNumber == reportTicket:  # this runs through the stories not in draft or blocked
-    #         if ticketType == 'Story':
-    #             listOfStories.append(reportTicket)  # makes a list of stories that need test cases for testrail
-print("A count was created for each of the JIRA ticket types.")
+        elif ticket_type == 'Story':
+            priority_dict['Story']['tickets'].append(key)
 
-#
-# below is the basic calculation for stories in JIRA vs. References in TestRail:
-listOfStoriesWithRefs = []
-listOfStoriesWithNORefs = []
-listOfRefsForStoriesNotNeedingRefs = []
-for num in listOfStories:
-    if num in listOfReferences:
-        listOfStoriesWithRefs.append(num)  # list of jira stories that are referenced in testrail
-    else:
-        listOfStoriesWithNORefs.append(num)  # list of jira stories that are not referenced in testrail
-for num in listOfReferences:
-    if num not in listOfStories and num not in listOfStoriesWithRefs:
-        listOfRefsForStoriesNotNeedingRefs.append(num)
-        # list of jira stories that are referenced in testrail, but are in draft or blocked
-print(listOfRefsForStoriesNotNeedingRefs)
-print(listOfStoriesWithRefs)
-print(listOfStoriesWithNORefs)
-#
-casesWithRefs = len(listOfStoriesWithRefs)
-casesWithNoRefs = len(listOfStoriesWithNORefs)
-refsWithNoCases = len(listOfRefsForStoriesNotNeedingRefs)
+        elif ticket_type == 'Sub-task':
+            priority_dict['Sub-task']['tickets'].append(key)
+
+        elif ticket_type == 'Task':
+            priority_dict['Task']['tickets'].append(key)
+
+        elif ticket_type == 'Epic':
+            priority_dict['Epic']['tickets'].append(key)
+
+    return priority_dict
+
+
+# Build a story reference dictionary of tickets that either:
+# 1. hasReference: Have a testrail test case linking to the ticket
+# 2. hasNoReference: Does not have a testrail test case linking to the ticket
+# 3. hasReferenceButDraftOrBlocked: Has a testrail test case linking to the ticket, but is in draft or blocked
+def build_story_reference_dict(jira_ticket_dict):
+    story_reference_dict = {
+        'hasReference': [],
+        'hasNoReference': [],
+        'hasReferenceButDraftOrBlocked': [],
+    }
+
+    for key, ticket in jira_ticket_dict.items():
+        if ticket['type'] == 'story':
+
+            if ticket['hasTestCase'] and not (ticket['status'] == 'Blocked' or ticket['status'] == 'Draft'):
+                story_reference_dict['hasReference'].append(key)
+
+            elif not ticket['hasTestCase']:
+                story_reference_dict['hasNoReference'].append(key)
+
+            else:
+                story_reference_dict['hasReferenceButDraftOrBlocked'].append(key)
+
+    return story_reference_dict
+
 #
 # listOfStoriesWithNORefs = sorted(listOfStoriesWithNORefs,
 #                                  key=lambda x: int(re.search(r'\d+$', x).group()))  # sorts only by number
@@ -304,215 +349,247 @@ refsWithNoCases = len(listOfRefsForStoriesNotNeedingRefs)
 # listOfRefsForStoriesNotNeedingRefs = listOfRefsForStoriesNotNeedingRefs[::-1]  # reverses the list
 #
 # print("A calculation was made for stories in JIRA vs. References in TestRail")
-#
-
-# The below call returns the list of columns for the sheet, making a dictionary of ID's and Titles
-# idTitleDict = {}
-# url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/columns'
-# headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
-# r = requests.get(url, headers=headers)
-# if r.status_code != 200:
-#     print('Error: The SmartSheet was not found.')
-# else:
-#     for column in r.json()['data']:
-#         columnId = column['id']
-#         columnTitle = column['title']
-#         if COLUMN_MAPPINGS[columnTitle]:
-#             print("The Column with title: %s did not show up in the preset list. The sheet may need updating..." % (
-#                 columnTitle))
-#             break
-#         if columnId not in listOfColumnIds:
-#             print("The Column with id: %i did not show up in the preset list. The sheet may need updating..." % (
-#                 columnId))
-#             break
-#         idTitleDict.update({columnId: columnTitle})
 # #
-percentageCovered = (float(len(listOfReferences)) - float(refsWithNoCases)) / float(len(listOfStories)) * float(100)
-
-
+#
+# # The below call returns the list of columns for the sheet, making a dictionary of ID's and Titles
+# # idTitleDict = {}
+# # url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/columns'
+# # headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
+# # r = requests.get(url, headers=headers)
+# # if r.status_code != 200:
+# #     print('Error: The SmartSheet was not found.')
+# # else:
+# #     for column in r.json()['data']:
+# #         columnId = column['id']
+# #         columnTitle = column['title']
+# #         if COLUMN_MAPPINGS[columnTitle]:
+# #             print("The Column with title: %s did not show up in the preset list. The sheet may need updating..." % (
+# #                 columnTitle))
+# #             break
+# #         if columnId not in listOfColumnIds:
+# #             print("The Column with id: %i did not show up in the preset list. The sheet may need updating..." % (
+# #                 columnId))
+# #             break
+# #         idTitleDict.update({columnId: columnTitle})
+# # #
+# percentageCovered = (float(len(listOfReferences)) - float(refsWithNoCases)) / float(len(listOfStories)) * float(100)
 #
 #
-
-def set_column_data(json, column_name, data, summary_format):
-    json.setdefault("cells", []).append(
-        {"columnId": COLUMN_MAPPINGS.get(column_name), "value": data, "format": summary_format})
-
-
-def create_rows(jira_ticket_dict):
-    # This function creates rows from the above data, per column
-    url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/rows'
-    headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
-    summary_format = ",2,1,,,,1,,,8,,,,,,"
-    normal_format = ",,,,,,,,,18,,,,,,"
-    json = {"toBottom": 'true', "cells": []}
-    for rowCount in range(0, len(jira_ticket_dict)):
-        if rowCount == 0:
-            set_column_data(json, 'References', len(listOfReferences), summary_format)
-            set_column_data(json, 'Cases w References', len(listOfStoriesWithRefs), summary_format)
-            set_column_data(json, 'Cases w/o References', len(listOfStoriesWithNORefs), summary_format)
-            set_column_data(json, 'Percentage Covered', str(round(percentageCovered, 2)) + " %", summary_format)
-            set_column_data(json, 'Percentage Not Covered', str(round(float(float(100) - percentageCovered), 2)) + " %",
-                            summary_format)
-            set_column_data(json, 'List of Stories that Need References', listOfStoriesWithNORefs[0], normal_format)
-            set_column_data(json, 'List of Stories that Have References', listOfStoriesWithRefs[0], normal_format)
-            set_column_data(json, 'List of Refs for Stories in Draft/Blocked', listOfRefsForStoriesNotNeedingRefs[0],
-                            normal_format)
-            set_column_data(json, 'Refs in Draft/Blocked', len(listOfRefsForStoriesNotNeedingRefs), summary_format)
-            set_column_data(json, 'Total JIRA', get_total_jira_issues(), summary_format)
-            set_column_data(json, 'Total Fueled', len(jira_ticket_dict), summary_format)
-            set_column_data(json, 'Bugs', totalBugCount, summary_format)
-            set_column_data(json, 'Stories', totalStoryCount, summary_format)
-            set_column_data(json, 'Sub-Task', totalSubTaskCount, summary_format)
-            set_column_data(json, 'Task', totalTaskCount, summary_format)
-            set_column_data(json, 'Epic', totalEpicCount, summary_format)
-            set_column_data(json, 'Blocked', len(AltTicketList_Blocked), summary_format)
-            set_column_data(json, 'Code Review', len(AltTicketList_CodeReview), summary_format)
-            set_column_data(json, 'Defects Found', len(AltTicketList_DefectsFound), summary_format)
-            set_column_data(json, 'Done', len(AltTicketList_Done), summary_format)
-            set_column_data(json, 'Draft', len(AltTicketList_Draft), summary_format)
-            set_column_data(json, 'In Progress', len(AltTicketList_InProgress), summary_format)
-            set_column_data(json, 'QA Complete', len(AltTicketList_QAComplete), summary_format)
-            set_column_data(json, 'QA in Progress', len(AltTicketList_QAinProgress), summary_format)
-            set_column_data(json, 'Ready for DEV', len(AltTicketList_ReadyforDEV), summary_format)
-            set_column_data(json, 'Ready for QA', len(AltTicketList_ReadyforQA), summary_format)
-            set_column_data(json, 'Total Bugs', openBugCount, summary_format)
-            set_column_data(json, 'Open: Low', len(AltTicketList_LowSeverity), summary_format)
-            set_column_data(json, 'Open: Medium', len(AltTicketList_MediumSeverity), summary_format)
-            set_column_data(json, 'Open: High', len(AltTicketList_HighSeverity), summary_format)
-            set_column_data(json, 'Open: Critical', len(AltTicketList_CriticalSeverity), summary_format)
-            set_column_data(json, 'Open: No Severity', len(AltTicketList_NullSeverity), summary_format)
-            set_column_data(json, 'Open: P1', len(AltTicketList_BlockerPriority), summary_format)
-            set_column_data(json, 'Open: P2', len(AltTicketList_CriticalPriority), summary_format)
-            set_column_data(json, 'Open: P3', len(AltTicketList_MajorPriority), summary_format)
-            set_column_data(json, 'Open: P4', len(AltTicketList_MinorPriority), summary_format)
-            set_column_data(json, 'Open: P5', len(AltTicketList_TrivialPriority), summary_format)
-            set_column_data(json, 'List of Blocked', AltTicketList_Blocked[0], normal_format)
-            set_column_data(json, 'List of Code Review', AltTicketList_CodeReview[0], normal_format)
-            set_column_data(json, 'List of Defects Found', AltTicketList_DefectsFound[0], normal_format)
-            set_column_data(json, 'List of Done', AltTicketList_Done[0], normal_format)
-            set_column_data(json, 'List of Draft', AltTicketList_Draft[0], normal_format)
-            set_column_data(json, 'List of In Progress', AltTicketList_InProgress[0], normal_format)
-            set_column_data(json, 'List of QA Complete', AltTicketList_QAComplete[0], normal_format)
-            set_column_data(json, 'List of Ready for DEV', AltTicketList_ReadyforDEV[0], normal_format)
-            set_column_data(json, 'List of Ready for QA', AltTicketList_ReadyforQA[0], normal_format)
-            set_column_data(json, 'List of ALT tickets with no label', listOfTicketsWithNoLabels[0], normal_format)
-            print("  ~~  Summary Line Created  ~~  ")
-        else:
-            set_column_data(json, 'List of Stories that Need References', listOfStoriesWithNORefs[rowCount],
-                            normal_format)
-            set_column_data(json, 'List of Stories that Have References', listOfStoriesWithRefs[rowCount],
-                            normal_format)
-            set_column_data(json, 'List of Refs for Stories in Draft/Blocked',
-                            listOfRefsForStoriesNotNeedingRefs[rowCount], normal_format)
-            set_column_data(json, 'List of Blocked', AltTicketList_Blocked[rowCount], normal_format)
-            set_column_data(json, 'List of Code Review', AltTicketList_CodeReview[rowCount], normal_format)
-            set_column_data(json, 'List of Defects Found', AltTicketList_DefectsFound[rowCount], normal_format)
-            set_column_data(json, 'List of Done', AltTicketList_Done[rowCount], normal_format)
-            set_column_data(json, 'List of Draft', AltTicketList_Draft[rowCount], normal_format)
-            set_column_data(json, 'List of In Progress', AltTicketList_InProgress[rowCount], normal_format)
-            set_column_data(json, 'List of QA Complete', AltTicketList_QAComplete[rowCount], normal_format)
-            set_column_data(json, 'List of QA in Progress', AltTicketList_QAinProgress[rowCount], normal_format)
-            set_column_data(json, 'List of Ready for DEV', AltTicketList_ReadyforDEV[rowCount], normal_format)
-            set_column_data(json, 'List of Ready for QA', AltTicketList_ReadyforQA[rowCount], normal_format)
-            set_column_data(json, 'List of ALT tickets with no label', listOfTicketsWithNoLabels[rowCount],
-                            normal_format)
-
-            if not json["cells"]:
-                print("There are no more rows to create. There were %i rows created in total" % rowCount)
-                break
-        r = requests.post(url, headers=headers, json=json)
-        # sleep(1) # adds delay to lessen load on server
-        if r.status_code == 200:
-            rowCount += 1
-            print("Row: " + str(rowCount) + " was created.")
-        else:
-            print("The row in the sheet was not created")
-            print('The status code was: ', r.status_code, 'and the content was: ', r.content)
-
-
+# #
+# #
+#
+# def set_column_data(json, column_name, data, summary_format):
+#     json.setdefault("cells", []).append(
+#         {"columnId": COLUMN_MAPPINGS.get(column_name), "value": data, "format": summary_format})
 #
 #
-# def DeleteRows():
-#     # This function deletes all the data in a sheet
-#     listOfRowsToDelete = []
-#     listOfRowIndexes = []
-#     url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId)
+# def create_rows(jira_ticket_dict):
+#     # This function creates rows from the above data, per column
+#     url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/rows'
 #     headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
-#     r = requests.get(url, headers=headers)
-#     if r.json() == [] or r.status_code != 200:
-#         print("No SmartSheet was returned, or a bad status")
-#         print("The Content is: ", r.content, 'and the status code is: ', r.status_code)
-#     else:
-#         if r.json()['rows'] == []:
-#             print("No rows to delete")
+#     summary_format = ",2,1,,,,1,,,8,,,,,,"
+#     normal_format = ",,,,,,,,,18,,,,,,"
+#     json = {"toBottom": 'true', "cells": []}
+#     for rowCount in range(0, len(jira_ticket_dict)):
+#         if rowCount == 0:
+#             set_column_data(json, 'References', len(listOfReferences), summary_format)
+#             set_column_data(json, 'Cases w References', len(listOfStoriesWithRefs), summary_format)
+#             set_column_data(json, 'Cases w/o References', len(listOfStoriesWithNORefs), summary_format)
+#             set_column_data(json, 'Percentage Covered', str(round(percentageCovered, 2)) + " %", summary_format)
+#             set_column_data(json, 'Percentage Not Covered', str(round(float(float(100) - percentageCovered), 2)) + " %",
+#                             summary_format)
+#             set_column_data(json, 'List of Stories that Need References', listOfStoriesWithNORefs[0], normal_format)
+#             set_column_data(json, 'List of Stories that Have References', listOfStoriesWithRefs[0], normal_format)
+#             set_column_data(json, 'List of Refs for Stories in Draft/Blocked', listOfRefsForStoriesNotNeedingRefs[0],
+#                             normal_format)
+#             set_column_data(json, 'Refs in Draft/Blocked', len(listOfRefsForStoriesNotNeedingRefs), summary_format)
+#             set_column_data(json, 'Total JIRA', get_total_jira_issues(), summary_format)
+#             set_column_data(json, 'Total Fueled', len(jira_ticket_dict), summary_format)
+#             set_column_data(json, 'Bugs', totalBugCount, summary_format)
+#             set_column_data(json, 'Stories', totalStoryCount, summary_format)
+#             set_column_data(json, 'Sub-Task', totalSubTaskCount, summary_format)
+#             set_column_data(json, 'Task', totalTaskCount, summary_format)
+#             set_column_data(json, 'Epic', totalEpicCount, summary_format)
+#             set_column_data(json, 'Blocked', len(AltTicketList_Blocked), summary_format)
+#             set_column_data(json, 'Code Review', len(AltTicketList_CodeReview), summary_format)
+#             set_column_data(json, 'Defects Found', len(AltTicketList_DefectsFound), summary_format)
+#             set_column_data(json, 'Done', len(AltTicketList_Done), summary_format)
+#             set_column_data(json, 'Draft', len(AltTicketList_Draft), summary_format)
+#             set_column_data(json, 'In Progress', len(AltTicketList_InProgress), summary_format)
+#             set_column_data(json, 'QA Complete', len(AltTicketList_QAComplete), summary_format)
+#             set_column_data(json, 'QA in Progress', len(AltTicketList_QAinProgress), summary_format)
+#             set_column_data(json, 'Ready for DEV', len(AltTicketList_ReadyforDEV), summary_format)
+#             set_column_data(json, 'Ready for QA', len(AltTicketList_ReadyforQA), summary_format)
+#             set_column_data(json, 'Total Bugs', openBugCount, summary_format)
+#             set_column_data(json, 'Open: Low', len(AltTicketList_LowSeverity), summary_format)
+#             set_column_data(json, 'Open: Medium', len(AltTicketList_MediumSeverity), summary_format)
+#             set_column_data(json, 'Open: High', len(AltTicketList_HighSeverity), summary_format)
+#             set_column_data(json, 'Open: Critical', len(AltTicketList_CriticalSeverity), summary_format)
+#             set_column_data(json, 'Open: No Severity', len(AltTicketList_NullSeverity), summary_format)
+#             set_column_data(json, 'Open: P1', len(AltTicketList_BlockerPriority), summary_format)
+#             set_column_data(json, 'Open: P2', len(AltTicketList_CriticalPriority), summary_format)
+#             set_column_data(json, 'Open: P3', len(AltTicketList_MajorPriority), summary_format)
+#             set_column_data(json, 'Open: P4', len(AltTicketList_MinorPriority), summary_format)
+#             set_column_data(json, 'Open: P5', len(AltTicketList_TrivialPriority), summary_format)
+#             set_column_data(json, 'List of Blocked', AltTicketList_Blocked[0], normal_format)
+#             set_column_data(json, 'List of Code Review', AltTicketList_CodeReview[0], normal_format)
+#             set_column_data(json, 'List of Defects Found', AltTicketList_DefectsFound[0], normal_format)
+#             set_column_data(json, 'List of Done', AltTicketList_Done[0], normal_format)
+#             set_column_data(json, 'List of Draft', AltTicketList_Draft[0], normal_format)
+#             set_column_data(json, 'List of In Progress', AltTicketList_InProgress[0], normal_format)
+#             set_column_data(json, 'List of QA Complete', AltTicketList_QAComplete[0], normal_format)
+#             set_column_data(json, 'List of Ready for DEV', AltTicketList_ReadyforDEV[0], normal_format)
+#             set_column_data(json, 'List of Ready for QA', AltTicketList_ReadyforQA[0], normal_format)
+#             set_column_data(json, 'List of ALT tickets with no label', listOfTicketsWithNoLabels[0], normal_format)
+#             print("  ~~  Summary Line Created  ~~  ")
 #         else:
-#             for row in r.json()['rows']:
-#                 # makes a list of all rows
-#                 rowId = row['id']
-#                 listOfRowsToDelete.append(rowId)
-#     if len(listOfRowsToDelete) <= 450:
-#         listOfRowIndexes.append((0, len(listOfRowsToDelete)))
-#     else:
-#         for number in range(0, len(listOfRowsToDelete), 450):
-#             # this creates a list of indexes to run through in blocks of 450
-#             if number <= len(listOfRowsToDelete) - 450:
-#                 listOfRowIndexes.append((number, number + 450))
-#             else:
-#                 listOfRowIndexes.append((number, len(listOfRowsToDelete)))
-#     for rowIndex in listOfRowIndexes:
-#         # this runs through all rows to delete, 450 at a time as this is max url legnth.
-#         url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/rows?ids='
-#         beginningOfList = rowIndex[0]
-#         endOfList = rowIndex[1]
-#         smallerListOfRowsToDelete = listOfRowsToDelete[
-#                                     beginningOfList:endOfList]  # creates a string with all the row id's in url
-#         for rowNumber in smallerListOfRowsToDelete:
-#             url = url + str(rowNumber) + ','
-#         url = url[:-1]  # removes the last comma
-#         url = url + '&ignoreRowsNotFound=true'
-#         headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
-#         r = requests.delete(url, headers=headers)
-#         sleep(1)  # adds delay to lessen load on server
-#         if r.json()['message'] == "SUCCESS":
-#             print("The data in the sheet was deleted for rows between index:", beginningOfList, "and: ", endOfList)
+#             set_column_data(json, 'List of Stories that Need References', listOfStoriesWithNORefs[rowCount],
+#                             normal_format)
+#             set_column_data(json, 'List of Stories that Have References', listOfStoriesWithRefs[rowCount],
+#                             normal_format)
+#             set_column_data(json, 'List of Refs for Stories in Draft/Blocked',
+#                             listOfRefsForStoriesNotNeedingRefs[rowCount], normal_format)
+#             set_column_data(json, 'List of Blocked', AltTicketList_Blocked[rowCount], normal_format)
+#             set_column_data(json, 'List of Code Review', AltTicketList_CodeReview[rowCount], normal_format)
+#             set_column_data(json, 'List of Defects Found', AltTicketList_DefectsFound[rowCount], normal_format)
+#             set_column_data(json, 'List of Done', AltTicketList_Done[rowCount], normal_format)
+#             set_column_data(json, 'List of Draft', AltTicketList_Draft[rowCount], normal_format)
+#             set_column_data(json, 'List of In Progress', AltTicketList_InProgress[rowCount], normal_format)
+#             set_column_data(json, 'List of QA Complete', AltTicketList_QAComplete[rowCount], normal_format)
+#             set_column_data(json, 'List of QA in Progress', AltTicketList_QAinProgress[rowCount], normal_format)
+#             set_column_data(json, 'List of Ready for DEV', AltTicketList_ReadyforDEV[rowCount], normal_format)
+#             set_column_data(json, 'List of Ready for QA', AltTicketList_ReadyforQA[rowCount], normal_format)
+#             set_column_data(json, 'List of ALT tickets with no label', listOfTicketsWithNoLabels[rowCount],
+#                             normal_format)
+#
+#             if not json["cells"]:
+#                 print("There are no more rows to create. There were %i rows created in total" % rowCount)
+#                 break
+#         r = requests.post(url, headers=headers, json=json)
+#         # sleep(1) # adds delay to lessen load on server
+#         if r.status_code == 200:
+#             rowCount += 1
+#             print("Row: " + str(rowCount) + " was created.")
 #         else:
-#             print("The data in the sheet was not deleted")
+#             print("The row in the sheet was not created")
 #             print('The status code was: ', r.status_code, 'and the content was: ', r.content)
 #
 #
-# DeleteRows()
-# CreateRows()
-#
-#
-# # if multiple editors use the sheet, it may be necessary to add the function 'DeleteColumns()'
-# # this would delete and create the columns per the specified list: 'listOfColumnTitles'
-#
-# #####################################################################################################################
-# # Below are helper functions:
-# # ChangeSheetName()
-#
-# def ChangeSheetName():
-#     # the below updates the smartsheet name
-#     month = datetime.date.today().strftime("%B")
-#     date = datetime.date.today().strftime("%d")
-#     year = datetime.date.today().strftime("%Y")
-#     dateHeader = date + " " + month + " " + year
-#     url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId)
-#     headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + smartSheetPassword}
-#     json = {"name": "ALT in Sprint Mobile Coverage - Daily"}
-#     r = requests.put(url, headers=headers, json=json)
-#     if r.status_code == 200:
-#         print("The smartsheet name was successfully changed")
-#     else:
-#         print("The smartsheet name was NOT successfully changed")
-#         print('The status code was: ', r.status_code, 'and the content was: ', r.content)
+# #
+# #
+# # def DeleteRows():
+# #     # This function deletes all the data in a sheet
+# #     listOfRowsToDelete = []
+# #     listOfRowIndexes = []
+# #     url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId)
+# #     headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
+# #     r = requests.get(url, headers=headers)
+# #     if r.json() == [] or r.status_code != 200:
+# #         print("No SmartSheet was returned, or a bad status")
+# #         print("The Content is: ", r.content, 'and the status code is: ', r.status_code)
+# #     else:
+# #         if r.json()['rows'] == []:
+# #             print("No rows to delete")
+# #         else:
+# #             for row in r.json()['rows']:
+# #                 # makes a list of all rows
+# #                 rowId = row['id']
+# #                 listOfRowsToDelete.append(rowId)
+# #     if len(listOfRowsToDelete) <= 450:
+# #         listOfRowIndexes.append((0, len(listOfRowsToDelete)))
+# #     else:
+# #         for number in range(0, len(listOfRowsToDelete), 450):
+# #             # this creates a list of indexes to run through in blocks of 450
+# #             if number <= len(listOfRowsToDelete) - 450:
+# #                 listOfRowIndexes.append((number, number + 450))
+# #             else:
+# #                 listOfRowIndexes.append((number, len(listOfRowsToDelete)))
+# #     for rowIndex in listOfRowIndexes:
+# #         # this runs through all rows to delete, 450 at a time as this is max url legnth.
+# #         url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId) + '/rows?ids='
+# #         beginningOfList = rowIndex[0]
+# #         endOfList = rowIndex[1]
+# #         smallerListOfRowsToDelete = listOfRowsToDelete[
+# #                                     beginningOfList:endOfList]  # creates a string with all the row id's in url
+# #         for rowNumber in smallerListOfRowsToDelete:
+# #             url = url + str(rowNumber) + ','
+# #         url = url[:-1]  # removes the last comma
+# #         url = url + '&ignoreRowsNotFound=true'
+# #         headers = {'Cache-Control': 'no-cache', 'Authorization': 'Bearer ' + smartSheetPassword}
+# #         r = requests.delete(url, headers=headers)
+# #         sleep(1)  # adds delay to lessen load on server
+# #         if r.json()['message'] == "SUCCESS":
+# #             print("The data in the sheet was deleted for rows between index:", beginningOfList, "and: ", endOfList)
+# #         else:
+# #             print("The data in the sheet was not deleted")
+# #             print('The status code was: ', r.status_code, 'and the content was: ', r.content)
+# #
+# #
+# # DeleteRows()
+# # CreateRows()
+# #
+# #
+# # # if multiple editors use the sheet, it may be necessary to add the function 'DeleteColumns()'
+# # # this would delete and create the columns per the specified list: 'listOfColumnTitles'
+# #
+# # #####################################################################################################################
+# # # Below are helper functions:
+# # # ChangeSheetName()
+# #
+# # def ChangeSheetName():
+# #     # the below updates the smartsheet name
+# #     month = datetime.date.today().strftime("%B")
+# #     date = datetime.date.today().strftime("%d")
+# #     year = datetime.date.today().strftime("%Y")
+# #     dateHeader = date + " " + month + " " + year
+# #     url = 'https://api.smartsheet.com/2.0/sheets/' + str(smartSheetId)
+# #     headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + smartSheetPassword}
+# #     json = {"name": "ALT in Sprint Mobile Coverage - Daily"}
+# #     r = requests.put(url, headers=headers, json=json)
+# #     if r.status_code == 200:
+# #         print("The smartsheet name was successfully changed")
+# #     else:
+# #         print("The smartsheet name was NOT successfully changed")
+# #         print('The status code was: ', r.status_code, 'and the content was: ', r.content)
+
 
 def main():
     list_of_suites = get_testrail_suites()
     list_of_references = get_testrail_list_of_references(list_of_suites)
     total_jira_issues = get_total_jira_issues()
-    jira_ticket_dict = build_jira_ticket_dict(total_jira_issues)
+    jira_ticket_dict = build_jira_ticket_dict(total_jira_issues, list_of_references)
+
+    print('***************************************')
+    print('************jira_ticket_dict*******************')
+    print('***************************************')
+    # print(json.dumps(jira_ticket_dict, indent=4))
+    print('***************************************')
+    severity_dict = build_severity_dict(jira_ticket_dict)
+    print('***************************************')
+    print('************severity_dict*******************')
+    print('***************************************')
+    # print(json.dumps(severity_dict, indent=4))
+    print('***************************************')
+    priority_dict = build_priority_dict(jira_ticket_dict)
+    print('***************************************')
+    print('************priority_dict*******************')
+    print('***************************************')
+    # print(json.dumps(priority_dict, indent=4))
+    print('***************************************')
+    status_dict, report_ticket_list = build_status_dict(jira_ticket_dict)
+    print('***************************************')
+    print('************status_dict*******************')
+    print('***************************************')
+    # print(json.dumps(status_dict, indent=4))
+    print('***************************************')
+    type_dict = build_status_dict(jira_ticket_dict)
+    print('***************************************')
+    print('************type_dict*******************')
+    print('***************************************')
+    # print(json.dumps(type_dict, indent=4))
+    print('***************************************')
 
 
 if __name__ == '__main__':
     main()
+

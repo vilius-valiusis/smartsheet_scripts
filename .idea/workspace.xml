@@ -4,6 +4,7 @@
     <bookmark url="file://$PROJECT_DIR$/fueled_alterra_jira_summary_for_smartsheets.py" line="568" mnemonic="8" />
   </component>
   <component name="ChangeListManager">
+<<<<<<< Updated upstream
     <list default="true" id="9e213a3a-d1a0-4c9b-b954-60b98aa87519" name="Default Changelist" comment="">
       <change afterPath="$PROJECT_DIR$/.idea/dictionaries/VIL.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
@@ -11,6 +12,9 @@
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/fueled_alterra_jira_summary_for_smartsheets.py" beforeDir="false" afterPath="$PROJECT_DIR$/fueled_alterra_jira_summary_for_smartsheets.py" afterDir="false" />
     </list>
+=======
+    <list default="true" id="9e213a3a-d1a0-4c9b-b954-60b98aa87519" name="Default Changelist" comment="" />
+>>>>>>> Stashed changes
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -47,8 +51,13 @@
       <file pinned="false" current-in-tab="true">
         <entry file="file://$PROJECT_DIR$/fueled_alterra_jira_summary_for_smartsheets.py">
           <provider selected="true" editor-type-id="text-editor">
+<<<<<<< Updated upstream
             <state relative-caret-position="340">
               <caret line="20" lean-forward="true" selection-start-line="20" selection-end-line="20" />
+=======
+            <state relative-caret-position="2685">
+              <caret line="179" column="22" lean-forward="true" selection-start-line="179" selection-start-column="22" selection-end-line="179" selection-end-column="22" />
+>>>>>>> Stashed changes
               <folding>
                 <element signature="e#0#15#0" expanded="true" />
                 <element signature="e#732#2562#0" />
@@ -254,8 +263,13 @@
     </entry>
     <entry file="file://$PROJECT_DIR$/fueled_alterra_jira_summary_for_smartsheets.py">
       <provider selected="true" editor-type-id="text-editor">
+<<<<<<< Updated upstream
         <state relative-caret-position="340">
           <caret line="20" lean-forward="true" selection-start-line="20" selection-end-line="20" />
+=======
+        <state relative-caret-position="2685">
+          <caret line="179" column="22" lean-forward="true" selection-start-line="179" selection-start-column="22" selection-end-line="179" selection-end-column="22" />
+>>>>>>> Stashed changes
           <folding>
             <element signature="e#0#15#0" expanded="true" />
             <element signature="e#732#2562#0" />
